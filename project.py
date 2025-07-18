@@ -6,6 +6,8 @@ import os
 from pytz import timezone
 import pytz
 import re
+import time
+import warnings
 
 CATEGORIES = [
     "Question", "Pending", "Update", "Request", "Feedback", "Other"
@@ -26,6 +28,19 @@ USER_COLORS = {
     "Aldo": "#23c053",
     "Moni": "#e754c5"
 }
+
+def safe_rerun():
+    try:
+        if hasattr(st, "set_query_params"):
+            st.set_query_params(_rerun=int(time.time()))
+        elif hasattr(st, "experimental_set_query_params"):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                st.experimental_set_query_params(_rerun=int(time.time()))
+        elif hasattr(st, "experimental_rerun"):
+            st.experimental_rerun()
+    except Exception:
+        pass
 
 def format_datetime_la(dt):
     la_tz = timezone('America/Los_Angeles')
@@ -92,12 +107,10 @@ def main():
         st.session_state.entries = load_entries()
     entries = st.session_state.entries
 
-    # User persistence
     if "user" not in st.session_state:
         st.session_state.user = USERS[0]
     user = st.session_state.user
 
-    # Sidebar user selection
     user = st.sidebar.radio(
         "Select user:",
         USERS,
@@ -106,7 +119,6 @@ def main():
     )
     st.session_state.user = user
 
-    # Sidebar notification badges
     st.sidebar.markdown("**Notifications:**", unsafe_allow_html=True)
     for user_iter in USERS:
         counts = pending_count_by_category(entries, user_iter)
@@ -117,7 +129,6 @@ def main():
             unsafe_allow_html=True
         )
 
-    # Sidebar calendar filter
     unique_dates = sorted({get_entry_date(e) for e in entries})
     if unique_dates:
         st.sidebar.markdown("**Filter by day:**")
@@ -144,14 +155,12 @@ def main():
     if "expanded_reply_idx" not in st.session_state:
         st.session_state.expanded_reply_idx = None
 
-    # --- Editor key and Banner/Editor reset logic ---
     editor_key = f"quill_editor_main_{user}"
 
     if editor_key not in st.session_state or st.session_state.get("reset_editor"):
         st.session_state[editor_key] = ""
         st.session_state["reset_editor"] = False
 
-    # Show success banner with Continue button
     if st.session_state.get("show_success"):
         st.success("Comment added.")
 
@@ -168,10 +177,9 @@ def main():
             col1, col2, col3 = st.columns([3,3,3])
             with col2:
                 if st.button("Continue", key="contbtn"):
-                    st.session_state[editor_key] = ""  # Clear editor content
+                    st.session_state[editor_key] = ""
                     st.session_state["show_success"] = False
-                    st.experimental_rerun()
-
+                    safe_rerun()
         st.stop()
 
     if st.session_state.get("reply_success"):
@@ -181,7 +189,6 @@ def main():
         st.warning(st.session_state.reply_error)
         st.session_state.reply_error = ""
 
-    # ------------- ADD COMMENT FORM -------------
     st.header("Add a new comment")
     category = st.selectbox("Category", sorted(CATEGORIES), key=f"category_main_{user}")
     comment = st_quill(html=True, key=editor_key)
@@ -202,7 +209,7 @@ def main():
             st.session_state.entries.append(new_entry)
             save_entries(st.session_state.entries)
             st.session_state["show_success"] = True
-            st.experimental_rerun()
+            safe_rerun()
 
     st.header("Comments thread")
     search_text = st.text_input("🔍 Search in all comments and replies", value="", placeholder="Type to search...")
@@ -261,7 +268,7 @@ def main():
                     st.session_state.entries[entries.index(entry)]["closed"] = True
                     save_entries(st.session_state.entries)
                     st.success("Thread closed!")
-                    st.experimental_rerun()
+                    safe_rerun()
                 if entry["user"] != user:
                     reply_key = f"reply_{idx}_{user}"
                     if reply_key not in st.session_state:
@@ -285,7 +292,7 @@ def main():
                                 st.session_state[reply_key] = ""
                                 st.success("Reply added.")
                                 st.session_state.expanded_reply_idx = idx
-                                st.experimental_rerun()
+                                safe_rerun()
                         if st.session_state.expanded_reply_idx != idx:
                             if st.session_state.get(reply_key):
                                 st.session_state.expanded_reply_idx = idx
