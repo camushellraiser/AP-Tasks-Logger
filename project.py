@@ -2,20 +2,22 @@ import streamlit as st
 from streamlit_quill import st_quill
 from datetime import datetime
 import json
-import os
-import re
-from pytz import timezone
 import pytz
-import gspread
+from pytz import timezone
+import base64
+import io
 from google.oauth2.service_account import Credentials
+import gspread
 
-# Google Sheets setup
-GSHEET_ID = "1MbElYeHw8bCK9kOyFjv1AtsSEu2H9Qmk8aC3seFhIVE"
-SERVICE_ACCOUNT_FILE = "credentials.json"
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
+# Load Google Sheets credentials from Streamlit secrets
+creds_b64 = st.secrets["GOOGLE_CREDS_BASE64"]
+creds_json = base64.b64decode(creds_b64)
+creds_info = json.load(io.BytesIO(creds_json))
+creds = Credentials.from_service_account_info(creds_info, scopes=['https://www.googleapis.com/auth/spreadsheets'])
 
-creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
 gc = gspread.authorize(creds)
+
+GSHEET_ID = st.secrets["GSHEET_ID"]
 sheet = gc.open_by_key(GSHEET_ID).sheet1
 
 CATEGORIES = [
@@ -33,9 +35,10 @@ CATEGORY_COLORS = {
     "Other": "#546E7A"
 }
 
-def format_datetime_la(dt):
+def format_datetime_pacific(dt):
     tz = timezone("America/Los_Angeles")
-    return dt.astimezone(tz).strftime("%d %b %Y %H:%M")
+    local_dt = dt.astimezone(tz)
+    return local_dt.strftime("%d %b %Y %H:%M %Z")
 
 def colored_name(user):
     if user == "Aldo":
@@ -65,7 +68,7 @@ def load_entries():
     return entries
 
 def save_entries(entries):
-    sheet.resize(rows=1)
+    sheet.resize(rows=1)  # Keep only header row
     rows = []
     for e in entries:
         replies_json = json.dumps(e.get("replies", []))
@@ -213,7 +216,7 @@ def main():
                 "user": user,
                 "category": category,
                 "comment": comment,
-                "datetime": format_datetime_la(datetime.now(pytz.utc)),
+                "datetime": format_datetime_pacific(datetime.now(pytz.utc)),
                 "closed": False,
                 "replies": []
             }
@@ -270,7 +273,7 @@ def main():
                             reply = {
                                 "user": user,
                                 "comment": reply_text,
-                                "datetime": format_datetime_la(datetime.now(pytz.utc)),
+                                "datetime": format_datetime_pacific(datetime.now(pytz.utc)),
                                 "category": "Answer"
                             }
                             st.session_state.entries[idx]["replies"].append(reply)
