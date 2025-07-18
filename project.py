@@ -257,4 +257,9 @@ def main():
                                 st.session_state.entries[entries.index(entry)]["replies"].append(reply)
                                 save_entries(st.session_state.entries)
                                 st.session_state["clear_reply_editor"] = reply_key
+                                st.success("Reply added.")
                                 st.session_state.expanded_reply_idx = idx
+            st.markdown("---")
+
+if __name__ == "__main__":
+    main()
