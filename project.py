@@ -10,11 +10,10 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # Google Sheets setup
-GSHEET_ID = "YOUR_GOOGLE_SHEET_ID"
+GSHEET_ID = "1MbElYeHw8bCK9kOyFjv1AtsSEu2H9Qmk8aC3seFhIVE"
 SERVICE_ACCOUNT_FILE = "credentials.json"
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 
-# Authenticate with Google Sheets
 creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
 gc = gspread.authorize(creds)
 sheet = gc.open_by_key(GSHEET_ID).sheet1
@@ -44,7 +43,6 @@ def colored_name(user):
     else:
         return f'<span style="color:#e754c5;font-weight:bold">{user}</span>'
 
-# Load entries from Google Sheets
 def load_entries():
     rows = sheet.get_all_records()
     entries = []
@@ -66,9 +64,7 @@ def load_entries():
         entries.append(entry)
     return entries
 
-# Save entries to Google Sheets
 def save_entries(entries):
-    # Clear all rows except header
     sheet.resize(rows=1)
     rows = []
     for e in entries:
@@ -103,7 +99,6 @@ def main():
     entries = st.session_state.entries
 
     if "user" not in st.session_state or st.session_state.user is None:
-        # Login buttons
         st.markdown("""
             <style>
             .login-btn-row {
