@@ -2,12 +2,27 @@ import streamlit as st
 from streamlit_quill import st_quill
 from datetime import datetime
 import json
-import re
-import pytz
+import os
 from pytz import timezone
-import base64
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
+import pytz
+import re
+
+# Google Sheets imports
+import gspread
+from google.oauth2.service_account import Credentials
+
+# Google Sheets setup
+GSPREAD_SHEET_ID = "1MbElYeHw8bCK9kOyFjv1AtsSEu2H9Qmk8aC3seFhIVE"
+
+# Load credentials from Streamlit secrets or local file
+if "gcp_service_account" in st.secrets:
+    creds_info = st.secrets["gcp_service_account"]
+    creds = Credentials.from_service_account_info(creds_info)
+else:
+    creds = Credentials.from_service_account_file("credentials.json")
+
+gc = gspread.authorize(creds)
+sheet = gc.open_by_key(GSPREAD_SHEET_ID).sheet1
 
 CATEGORIES = [
     "Feedback", "Pending", "Question", "Request", "Other", "Update"
@@ -28,55 +43,42 @@ USER_COLORS = {
     "Moni": "#e754c5"
 }
 
-def get_sheets_service():
-    creds_json_b64 = st.secrets["GOOGLE_CREDS_BASE64"]
-    creds_json = base64.b64decode(creds_json_b64)
-    creds = service_account.Credentials.from_service_account_info(json.loads(creds_json))
-    service = build('sheets', 'v4', credentials=creds)
-    return service.spreadsheets()
-
-GSHEET_ID = st.secrets["GSHEET_ID"]
-
 def format_datetime_la(dt):
     la_tz = timezone('America/Los_Angeles')
     dt_la = dt.astimezone(la_tz)
-    # Show PDT or PST dynamically
-    tz_abbr = dt_la.tzname()
+    # Determine if PDT or PST based on date
+    is_dst = bool(dt_la.dst())
+    tz_abbr = "PDT" if is_dst else "PST"
     return dt_la.strftime(f"%d %b %Y - %I:%M %p ({tz_abbr})")
 
-def load_entries():
-    sheet = get_sheets_service()
-    result = sheet.values().get(spreadsheetId=GSHEET_ID, range="Sheet1!A2:F").execute()
-    values = result.get('values', [])
-    entries = []
-    for row in values:
-        entry = {
-            "user": row[0],
-            "category": row[1],
-            "comment": row[2],
-            "datetime": row[3],
-            "closed": row[4].lower() == "true" if len(row) > 4 else False,
-            "replies": json.loads(row[5]) if len(row) > 5 and row[5] else []
-        }
-        entries.append(entry)
-    return entries
-
 def save_entries(entries):
-    sheet = get_sheets_service()
-    values = []
+    # Clear all rows except header
+    sheet.resize(1)
+    # Prepare data for sheet
+    rows = []
     for e in entries:
-        values.append([
+        row = [
             e.get("user", ""),
             e.get("category", ""),
             e.get("comment", ""),
             e.get("datetime", ""),
             str(e.get("closed", False)),
             json.dumps(e.get("replies", []))
-        ])
-    body = {"values": values}
-    sheet.values().clear(spreadsheetId=GSHEET_ID, range="Sheet1!A2:F").execute()
-    sheet.values().update(spreadsheetId=GSHEET_ID, range="Sheet1!A2:F",
-                          valueInputOption="RAW", body=body).execute()
+        ]
+        rows.append(row)
+    if rows:
+        sheet.append_rows(rows)
+
+def load_entries():
+    all_records = sheet.get_all_records()
+    for r in all_records:
+        # Parse replies json string back to list
+        try:
+            r["replies"] = json.loads(r.get("replies_json", "[]"))
+        except Exception:
+            r["replies"] = []
+        r["closed"] = r.get("closed", "False") in [True, "True", "true"]
+    return all_records
 
 def pending_count_by_category(entries, viewing_user):
     other_user = USERS[1] if viewing_user == USERS[0] else USERS[0]
