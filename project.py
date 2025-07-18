@@ -2,13 +2,292 @@ import streamlit as st
 from streamlit_quill import st_quill
 from datetime import datetime
 import json
-import re
+import os
 from pytz import timezone
 import pytz
-import gspread
+import re
+import base64
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
-# Constants and colors
+# Tus constantes
+CATEGORIES = [
+    "Feedback", "Pending", "Question", "Request", "Other", "Update"
+]
+USERS = ["Aldo", "Moni"]
+
+# Ya no usaremos archivo JSON local
+DATAFILE = None
+
+CATEGORY_COLORS = {
+    "Question": "#2979FF",
+    "Pending": "#FF9800",
+    "Update": "#009688",
+    "Request": "#8E24AA",
+    "Feedback": "#43A047",
+    "Other": "#546E7A"
+}
+
+USER_COLORS = {
+    "Aldo": "#23c053",
+    "Moni": "#e754c5"
+}
+
+GOOGLE_CREDS_BASE64 = st.secrets["google_creds_base64"]
+GSHEET_ID = st.secrets["gsheet_id"]
+
+def format_datetime_la(dt):
+    la_tz = timezone('America/Los_Angeles')
+    dt_la = dt.astimezone(la_tz)
+    # Solo mostrar PST o PDT según fecha
+    if dt_la.dst():
+        tz_abbr = "PDT"
+    else:
+        tz_abbr = "PST"
+    return dt_la.strftime(f"%d %b %Y - %I:%M %p ({tz_abbr})")
+
+def get_gsheet_client():
+    creds_json = base64.b64decode(GOOGLE_CREDS_BASE64).decode("utf-8")
+    creds_dict = json.loads(creds_json)
+    creds = Credentials.from_service_account_info(creds_dict, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+    service = build('sheets', 'v4', credentials=creds)
+    return service.spreadsheets()
+
+def load_entries():
+    sheet = get_gsheet_client()
+    try:
+        result = sheet.values().get(spreadsheetId=GSHEET_ID, range="Sheet1!A2:F").execute()
+        values = result.get('values', [])
+        entries = []
+        for row in values:
+            # Se espera que columnas estén en orden:
+            # user, category, comment, datetime, closed, replies_json
+            # Se ajusta para que siempre haya 6 columnas (llenar con "")
+            while len(row) < 6:
+                row.append("")
+            user, category, comment, datetime_str, closed_str, replies_json = row
+            closed = closed_str.lower() == "true"
+            try:
+                replies = json.loads(replies_json) if replies_json else []
+            except json.JSONDecodeError:
+                replies = []
+            entries.append({
+                "user": user,
+                "category": category,
+                "comment": comment,
+                "datetime": datetime_str,
+                "closed": closed,
+                "replies": replies
+            })
+        return entries
+    except HttpError as e:
+        st.error(f"Error loading entries from Google Sheets: {e}")
+        return []
+
+def save_entries(entries):
+    sheet = get_gsheet_client()
+    values = []
+    for e in entries:
+        replies_json = json.dumps(e.get("replies", []), ensure_ascii=False)
+        values.append([
+            e.get("user", ""),
+            e.get("category", ""),
+            e.get("comment", ""),
+            e.get("datetime", ""),
+            str(e.get("closed", False)),
+            replies_json
+        ])
+    body = {"values": values}
+    try:
+        sheet.values().clear(spreadsheetId=GSHEET_ID, range="Sheet1!A2:F").execute()
+        sheet.values().update(
+            spreadsheetId=GSHEET_ID,
+            range="Sheet1!A2",
+            valueInputOption="RAW",
+            body=body
+        ).execute()
+    except HttpError as e:
+        st.error(f"Error saving entries to Google Sheets: {e}")
+
+def pending_count_by_category(entries, viewing_user):
+    other_user = USERS[1] if viewing_user == USERS[0] else USERS[0]
+    counts = {cat: 0 for cat in CATEGORIES}
+    for entry in entries:
+        if entry.get("closed", False):
+            continue
+        if entry["user"] == other_user:
+            replies = entry.get("replies", [])
+            if not replies or replies[-1]["user"] != viewing_user:
+                cat = entry.get("category", "Other")
+                if cat not in counts:
+                    counts[cat] = 0
+                counts[cat] += 1
+    return counts
+
+def colored_name(user):
+    color = USER_COLORS.get(user, "#888")
+    return f'<span style="color:{color};font-weight:bold">{user}</span>'
+
+def category_badge_html(category, count, margin_left=4):
+    color = CATEGORY_COLORS.get(category, "#888")
+    initial = category[0]
+    return f"""<span style='background:{color};
+    color:#fff;border-radius:10px;padding:2px 9px;font-size:0.89em;
+    margin-left:{margin_left}px;display:inline-block;'>{initial}:{count}</span>"""
+
+def category_label_html(category):
+    color = CATEGORY_COLORS.get(category, "#888")
+    return f"""<span style='background:{color};color:#fff;
+    border-radius:6px;padding:2px 10px;font-size:0.95em;margin-left:7px;'>{category}</span>"""
+
+def highlight_text(text, query):
+    if not query.strip():
+        return text
+    pattern = re.compile(re.escape(query), re.IGNORECASE)
+    def repl(m):
+        return f"<mark style='background: #ffe066'>{m.group(0)}</mark>"
+    return pattern.sub(repl, text)
+
+def get_entry_date(entry):
+    dt_txt = entry["datetime"].split(" - ")[0]
+    return datetime.strptime(dt_txt, "%d %b %Y").date()
+
+def main():
+    st.set_page_config(page_title="Aldo/Moni Logger")
+
+    if "entries" not in st.session_state:
+        st.session_state.entries = load_entries()
+    entries = st.session_state.entries
+
+    if "user" not in st.session_state:
+        st.session_state.user = USERS[0]
+    user = st.session_state.user
+
+    user = st.sidebar.radio(
+        "Select user:",
+        USERS,
+        index=USERS.index(user),
+        key="user_radio"
+    )
+    st.session_state.user = user
+
+    st.sidebar.markdown("**Notifications:**", unsafe_allow_html=True)
+    for user_iter in USERS:
+        counts = pending_count_by_category(entries, user_iter)
+        badges = "".join([category_badge_html(cat, n) for cat, n in counts.items() if n > 0])
+        user_label = f"<span style='font-weight:600'>{user_iter}</span>"
+        st.sidebar.markdown(
+            f"{user_label}{badges if badges else '<span style=\"color:#888;font-size:0.95em\"> 0</span>'}",
+            unsafe_allow_html=True
+        )
+
+    unique_dates = sorted({get_entry_date(e) for e in entries})
+    if unique_dates:
+        st.sidebar.markdown("**Filter by day:**")
+        calendar_selected = st.sidebar.date_input(
+            "Jump to day",
+            value=None,
+            min_value=min(unique_dates),
+            max_value=max(unique_dates),
+            format="YYYY-MM-DD",
+            key="calendar_input"
+        )
+    else:
+        calendar_selected = None
+
+    user_color = USER_COLORS.get(user, "#888")
+
+    st.markdown(
+        f"<h1 style='color:{user_color};font-size:2.8em;text-align:center;margin-bottom:10px;margin-top:4px'>{user}</h1>",
+        unsafe_allow_html=True
+    )
+    st.markdown("<div style='height: 2px'></div>", unsafe_allow_html=True)
+
+    if "expanded_reply_idx" not in st.session_state:
+        st.session_state.expanded_reply_idx = None
+
+    editor_key = f"quill_editor_main_{user}"
+
+    if editor_key not in st.session_state:
+        st.session_state[editor_key] = ""
+
+    if st.session_state.get("show_success"):
+        st.success("Comment added.")
+        st.session_state["show_success"] = False
+
+    if st.session_state.get("reply_success"):
+        st.success(st.session_state.reply_success)
+        st.session_state.reply_success = ""
+    if st.session_state.get("reply_error"):
+        st.warning(st.session_state.reply_error)
+        st.session_state.reply_error = ""
+
+    st.header("Add a new comment")
+    category = st.selectbox("Category", sorted(CATEGORIES), key=f"category_main_{user}")
+    comment = st_quill(html=True, key=editor_key)
+
+    add_comment_btn = st.button("Add comment")
+    if add_comment_btn:
+        if not comment or comment.strip() in ("", "<p><br></p>"):
+            st.warning("Please enter a comment.")
+        else:
+            new_entry = {
+                "user": user,
+                "category": category,
+                "comment": comment,
+                "datetime": format_datetime_la(datetime.now(pytz.utc)),
+                "replies": [],
+                "closed": False
+            }
+            st.session_state.entries.append(new_entry)
+            save_entries(st.session_state.entries)
+            st.session_state["show_success"] = True
+            st.session_state[editor_key] = ""  # Clear editor content immediately
+
+    st.header("Comments thread")
+    search_text = st.text_input("🔍 Search in all comments and replies", value="", placeholder="Type to search...")
+
+    def entry_matches(entry, search):
+        search = search.lower()
+        def clean_html(raw_html):
+            cleanr = re.compile('<.*?>')
+            return re.sub(cleanr, '', raw_html)
+        if search in clean_html(entry["comment"]).lower():
+            return True
+        for reply in entry.get("replies", []):
+            if search in clean_html(reply["comment"]).lower():
+                return True
+        return False
+
+    if unique_dates and calendar_selected:
+        if isinstance(calendar_selected, list):
+            calendar_selected = calendar_selected[0]
+        calendar_filtered = [e for e in entries if get_entry_date(e) == calendar_selected]
+    else:
+        calendar_filtered = entries
+
+    if search_text:
+        filtered_entries = [e for e in calendar_filtered if entry_matches(e, search_text)]
+    else:
+        filtered_entries = calendar_filtered
+
+Perfecto, te doy el código completo con la integración de Google Sheets usando tu `GOOGLE_CREDS_BASE64` y `GSHEET_ID`. Este código reemplaza la carga y guardado en archivo JSON local, para usar Google Sheets como base de datos. Además corrige el formato horario con PST/PDT.
+
+```python
+import streamlit as st
+from streamlit_quill import st_quill
+from datetime import datetime
+import json
+import re
+import base64
+from pytz import timezone
+import pytz
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+# Constantes
 CATEGORIES = [
     "Feedback", "Pending", "Question", "Request", "Other", "Update"
 ]
@@ -28,69 +307,77 @@ USER_COLORS = {
     "Moni": "#e754c5"
 }
 
-# Your Google Sheet ID (already known)
-GSHEET_ID = "1MbElYeHw8bCK9kOyFjv1AtsSEu2H9Qmk8aC3seFhIVE"
+GOOGLE_CREDS_BASE64 = st.secrets["google_creds_base64"]
+GSHEET_ID = st.secrets["gsheet_id"]
 
 def format_datetime_la(dt):
     la_tz = timezone('America/Los_Angeles')
     dt_la = dt.astimezone(la_tz)
-    tz_name = dt_la.tzname()
-    return dt_la.strftime(f"%d %b %Y - %I:%M %p ({tz_name})")
+    if dt_la.dst():
+        tz_abbr = "PDT"
+    else:
+        tz_abbr = "PST"
+    return dt_la.strftime(f"%d %b %Y - %I:%M %p ({tz_abbr})")
 
 def get_gsheet_client():
-    creds_dict = json.loads(st.secrets["gcp_service_account"])
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    client = gspread.authorize(creds)
-    return client
+    creds_json = base64.b64decode(GOOGLE_CREDS_BASE64).decode("utf-8")
+    creds_dict = json.loads(creds_json)
+    creds = Credentials.from_service_account_info(creds_dict, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+    service = build('sheets', 'v4', credentials=creds)
+    return service.spreadsheets()
 
 def load_entries():
-    client = get_gsheet_client()
-    sheet = client.open_by_key(GSHEET_ID).sheet1
-    rows = sheet.get_all_records()
-    entries = []
-    for row in rows:
-        entry = {
-            "user": row.get("user", ""),
-            "category": row.get("category", ""),
-            "comment": row.get("comment", ""),
-            "datetime": row.get("datetime", ""),
-            "closed": row.get("closed", False),
-            "replies": []
-        }
-        replies_json = row.get("replies_json", "")
-        if replies_json:
+    sheet = get_gsheet_client()
+    try:
+        result = sheet.values().get(spreadsheetId=GSHEET_ID, range="Sheet1!A2:F").execute()
+        values = result.get('values', [])
+        entries = []
+        for row in values:
+            while len(row) < 6:
+                row.append("")
+            user, category, comment, datetime_str, closed_str, replies_json = row
+            closed = closed_str.lower() == "true"
             try:
-                entry["replies"] = json.loads(replies_json)
-            except:
-                entry["replies"] = []
-        entries.append(entry)
-    return entries
+                replies = json.loads(replies_json) if replies_json else []
+            except json.JSONDecodeError:
+                replies = []
+            entries.append({
+                "user": user,
+                "category": category,
+                "comment": comment,
+                "datetime": datetime_str,
+                "closed": closed,
+                "replies": replies
+            })
+        return entries
+    except HttpError as e:
+        st.error(f"Error loading entries from Google Sheets: {e}")
+        return []
 
 def save_entries(entries):
-    client = get_gsheet_client()
-    sheet = client.open_by_key(GSHEET_ID).sheet1
-    sheet.resize(rows=1)
-    rows = [["user", "category", "comment", "datetime", "closed", "replies_json"]]
+    sheet = get_gsheet_client()
+    values = []
     for e in entries:
-        rows.append([
+        replies_json = json.dumps(e.get("replies", []), ensure_ascii=False)
+        values.append([
             e.get("user", ""),
             e.get("category", ""),
             e.get("comment", ""),
             e.get("datetime", ""),
-            e.get("closed", False),
-            json.dumps(e.get("replies", []))
+            str(e.get("closed", False)),
+            replies_json
         ])
-    sheet.update(rows)
-
-# (Keep the rest of your code unchanged, including UI and logic)
-
-# Insert your full app code here, using load_entries() and save_entries()
-
-# For example:
+    body = {"values": values}
+    try:
+        sheet.values().clear(spreadsheetId=GSHEET_ID, range="Sheet1!A2:F").execute()
+        sheet.values().update(
+            spreadsheetId=GSHEET_ID,
+            range="Sheet1!A2",
+            valueInputOption="RAW",
+            body=body
+        ).execute()
+    except HttpError as e:
+        st.error(f"Error saving entries to Google Sheets: {e}")
 
 def pending_count_by_category(entries, viewing_user):
     other_user = USERS[1] if viewing_user == USERS[0] else USERS[0]
@@ -102,7 +389,9 @@ def pending_count_by_category(entries, viewing_user):
             replies = entry.get("replies", [])
             if not replies or replies[-1]["user"] != viewing_user:
                 cat = entry.get("category", "Other")
-                counts[cat] = counts.get(cat, 0) + 1
+                if cat not in counts:
+                    counts[cat] = 0
+                counts[cat] += 1
     return counts
 
 def colored_name(user):
