@@ -51,7 +51,7 @@ def load_entries():
     try:
         client = get_gsheet_client()
         sheet = client.spreadsheets()
-        result = sheet.values().get(spreadsheetId=GSHEET_ID, range="Entries!A2:F").execute()
+        result = sheet.values().get(spreadsheetId=GSHEET_ID, range="Sheet1!A2:F").execute()
         values = result.get("values", [])
         entries = []
         for row in values:
