@@ -49,10 +49,14 @@ def pending_count_by_category(entries, viewing_user):
         if entry.get("closed", False):
             continue
         if entry["user"] == other_user:
-            cat = entry.get("category", "Other")
-            if cat not in counts:
-                counts[cat] = 0
-            counts[cat] += 1
+            replies = entry.get("replies", [])
+            if replies:
+                if replies[-1]["user"] != viewing_user:
+                    cat = entry.get("category", "Other")
+                    counts[cat] = counts.get(cat, 0) + 1
+            else:
+                cat = entry.get("category", "Other")
+                counts[cat] = counts.get(cat, 0) + 1
     return counts
 
 def colored_name(user):
@@ -142,8 +146,6 @@ def main():
     if editor_key not in st.session_state:
         st.session_state[editor_key] = ""
 
-    # Eliminamos banners de éxito para evitar problemas visuales
-
     st.header("Add a new comment")
     category = st.selectbox("Category", sorted(CATEGORIES), key=f"category_main_{user}")
 
@@ -168,7 +170,8 @@ def main():
             }
             st.session_state.entries.append(new_entry)
             save_entries(st.session_state.entries)
-            st.session_state["clear_editor"] = True  # Limpiar editor al enviar
+            st.session_state["clear_editor"] = True
+            st.success("Comment added.")
 
     st.header("Comments thread")
     search_text = st.text_input("🔍 Search in all comments and replies", value="", placeholder="Type to search...")
@@ -255,7 +258,3 @@ def main():
                                 save_entries(st.session_state.entries)
                                 st.session_state["clear_reply_editor"] = reply_key
                                 st.session_state.expanded_reply_idx = idx
-            st.markdown("---")
-
-if __name__ == "__main__":
-    main()
