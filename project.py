@@ -2,12 +2,19 @@ import streamlit as st
 from streamlit_quill import st_quill
 from datetime import datetime
 import json
-import re
-import pytz
-from pytz import timezone
 import base64
-from google.oauth2 import service_account
+from pytz import timezone
+import pytz
+import re
+
+from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+
+# ID de tu Google Sheet
+GSHEET_ID = "1MbElYeHw8bCK9kOyFjv1AtsSEu2H9Qmk8aC3seFhIVE"
+
+# Scope necesario para Google Sheets API
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 CATEGORIES = [
     "Feedback", "Pending", "Question", "Request", "Other", "Update"
@@ -28,68 +35,65 @@ USER_COLORS = {
     "Moni": "#e754c5"
 }
 
-GSHEET_ID = "1MbElYeHw8bCK9kOyFjv1AtsSEu2H9Qmk8aC3seFhIVE"
+def get_gsheet_client():
+    decoded_bytes = base64.b64decode(st.secrets["GOOGLE_CREDS_BASE64"])
+    decoded_str = decoded_bytes.decode("utf-8")
+    creds_dict = json.loads(decoded_str)
+    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    client = build('sheets', 'v4', credentials=creds)
+    return client
+
+def save_entries(entries):
+    client = get_gsheet_client()
+    sheet = client.spreadsheets()
+    
+    values = []
+    for entry in entries:
+        replies_json = json.dumps(entry.get("replies", []), ensure_ascii=False)
+        values.append([
+            entry.get("user", ""),
+            entry.get("category", ""),
+            entry.get("comment", ""),
+            entry.get("datetime", ""),
+            str(entry.get("closed", False)),
+            replies_json
+        ])
+    
+    # Limpiamos rango de datos antes de actualizar para evitar residuos
+    sheet.values().clear(spreadsheetId=GSHEET_ID, range="A2:F1000").execute()
+    
+    # Actualizamos con los nuevos valores
+    sheet.values().update(
+        spreadsheetId=GSHEET_ID,
+        range="A2:F1000",
+        valueInputOption="RAW",
+        body={"values": values}
+    ).execute()
+
+def load_entries():
+    client = get_gsheet_client()
+    sheet = client.spreadsheets()
+    result = sheet.values().get(spreadsheetId=GSHEET_ID, range="A2:F1000").execute()
+    values = result.get("values", [])
+    entries = []
+    for row in values:
+        try:
+            entries.append({
+                "user": row[0],
+                "category": row[1],
+                "comment": row[2],
+                "datetime": row[3],
+                "closed": row[4].lower() == "true",
+                "replies": json.loads(row[5]) if len(row) > 5 else []
+            })
+        except Exception:
+            pass
+    return entries
 
 def format_datetime_la(dt):
     la_tz = timezone('America/Los_Angeles')
     dt_la = dt.astimezone(la_tz)
-    # Show PDT or PST instead of Los Angeles text
-    suffix = "PDT" if dt_la.dst() != datetime.timedelta(0) else "PST"
-    return dt_la.strftime(f"%d %b %Y - %I:%M %p ({suffix})")
-
-def get_gsheet_client():
-    creds_json_str = st.secrets["gcp_service_account"]
-    creds_json = json.loads(creds_json_str)
-    creds = service_account.Credentials.from_service_account_info(
-        creds_json,
-        scopes=["https://www.googleapis.com/auth/spreadsheets"]
-    )
-    service = build('sheets', 'v4', credentials=creds, cache_discovery=False)
-    return service.spreadsheets()
-
-def load_entries():
-    sheet = get_gsheet_client()
-    result = sheet.values().get(spreadsheetId=GSHEET_ID, range="Sheet1!A2:F").execute()
-    rows = result.get("values", [])
-    entries = []
-    for row in rows:
-        # Unpack row with defaults for missing columns
-        user, category, comment, datetime_str, closed_str, replies_json = (row + [""] * 6)[:6]
-        closed = closed_str.lower() == "true"
-        try:
-            replies = json.loads(replies_json) if replies_json else []
-        except:
-            replies = []
-        entries.append({
-            "user": user,
-            "category": category,
-            "comment": comment,
-            "datetime": datetime_str,
-            "closed": closed,
-            "replies": replies
-        })
-    return entries
-
-def save_entries(entries):
-    sheet = get_gsheet_client()
-    values = []
-    for e in entries:
-        values.append([
-            e.get("user", ""),
-            e.get("category", ""),
-            e.get("comment", ""),
-            e.get("datetime", ""),
-            str(e.get("closed", False)),
-            json.dumps(e.get("replies", []), ensure_ascii=False)
-        ])
-    body = {"values": values}
-    sheet.values().clear(spreadsheetId=GSHEET_ID, range="Sheet1!A2:F").execute()
-    sheet.values().update(
-        spreadsheetId=GSHEET_ID,
-        range="Sheet1!A2",
-        valueInputOption="RAW",
-        body=body
-    ).execute()
+    return dt_la.strftime("%d %b %Y - %I:%M %p (%Z)")  # Muestra PDT o PST automáticamente
 
 def pending_count_by_category(entries, viewing_user):
     other_user = USERS[1] if viewing_user == USERS[0] else USERS[0]
@@ -138,11 +142,7 @@ def main():
     st.set_page_config(page_title="Aldo/Moni Logger")
 
     if "entries" not in st.session_state:
-        try:
-            st.session_state.entries = load_entries()
-        except Exception as e:
-            st.error(f"Error loading entries from Google Sheets: {e}")
-            st.session_state.entries = []
+        st.session_state.entries = load_entries()
     entries = st.session_state.entries
 
     if "user" not in st.session_state:
@@ -226,12 +226,9 @@ def main():
                 "closed": False
             }
             st.session_state.entries.append(new_entry)
-            try:
-                save_entries(st.session_state.entries)
-                st.session_state["show_success"] = True
-                st.session_state[editor_key] = ""  # Clear editor content immediately
-            except Exception as e:
-                st.error(f"Error saving entry to Google Sheets: {e}")
+            save_entries(st.session_state.entries)
+            st.session_state["show_success"] = True
+            st.session_state[editor_key] = ""  # Clear editor content immediately
 
     st.header("Comments thread")
     search_text = st.text_input("🔍 Search in all comments and replies", value="", placeholder="Type to search...")
@@ -288,11 +285,8 @@ def main():
             if not entry.get("closed", False):
                 if st.button(f"Close thread #{idx+1}", key=f"closebtn_{idx}"):
                     st.session_state.entries[entries.index(entry)]["closed"] = True
-                    try:
-                        save_entries(st.session_state.entries)
-                        st.success("Thread closed!")
-                    except Exception as e:
-                        st.error(f"Error saving closed thread to Google Sheets: {e}")
+                    save_entries(st.session_state.entries)
+                    st.success("Thread closed!")
 
                 if entry["user"] != user:
                     reply_key = f"reply_{idx}_{user}"
@@ -313,13 +307,10 @@ def main():
                                     "datetime": format_datetime_la(datetime.now(pytz.utc))
                                 }
                                 st.session_state.entries[entries.index(entry)]["replies"].append(reply)
-                                try:
-                                    save_entries(st.session_state.entries)
-                                    st.session_state[reply_key] = ""
-                                    st.success("Reply added.")
-                                    st.session_state.expanded_reply_idx = idx
-                                except Exception as e:
-                                    st.error(f"Error saving reply to Google Sheets: {e}")
+                                save_entries(st.session_state.entries)
+                                st.session_state[reply_key] = ""
+                                st.success("Reply added.")
+                                st.session_state.expanded_reply_idx = idx
             st.markdown("---")
 
 if __name__ == "__main__":
