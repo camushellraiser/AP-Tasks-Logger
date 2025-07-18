@@ -28,7 +28,7 @@ USER_COLORS = {
     "Moni": "#e754c5"
 }
 
-GSHEET_ID = "1MbElYeHw8bCK9kOyFjv1AtsSEu2H9Qmk8aC3seFhIVE"  # tu ID de Google Sheet
+GSHEET_ID = "1MbElYeHw8bCK9kOyFjv1AtsSEu2H9Qmk8aC3seFhIVE"  # Tu ID de Google Sheet
 
 def format_datetime_la(dt):
     la_tz = timezone('America/Los_Angeles')
@@ -58,7 +58,6 @@ def load_entries():
         values = result.get("values", [])
         entries = []
         for row in values:
-            # Completar filas que puedan faltar campos con valores por defecto
             while len(row) < 6:
                 row.append("")
             entry = {
@@ -79,7 +78,6 @@ def save_entries(entries):
     try:
         client = get_gsheet_client()
         sheet = client.spreadsheets()
-        # Limpiar rango antes de escribir
         sheet.values().clear(spreadsheetId=GSHEET_ID, range="Sheet1!A2:F").execute()
 
         values = []
@@ -307,6 +305,12 @@ def main():
                     reply_key = f"reply_{idx}_{user}"
                     if reply_key not in st.session_state:
                         st.session_state[reply_key] = ""
+
+                    # Limpieza segura del editor de replies
+                    if st.session_state.get("clear_reply_editor") == reply_key:
+                        st.session_state[reply_key] = ""
+                        st.session_state["clear_reply_editor"] = None
+
                     expanded = (st.session_state.expanded_reply_idx == idx)
                     with st.expander(f"Reply as {user}", expanded=expanded):
                         comment_reply = st_quill(key=reply_key, html=True)
@@ -323,7 +327,8 @@ def main():
                                 }
                                 st.session_state.entries[entries.index(entry)]["replies"].append(reply)
                                 save_entries(st.session_state.entries)
-                                st.session_state[reply_key] = ""
+                                st.session_state["reply_success"] = "Reply added."
+                                st.session_state["clear_reply_editor"] = reply_key  # Marca para limpiar
                                 st.success("Reply added.")
                                 st.session_state.expanded_reply_idx = idx
             st.markdown("---")
