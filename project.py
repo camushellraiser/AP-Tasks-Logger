@@ -11,7 +11,9 @@ CATEGORIES = [
     "Feedback", "Pending", "Question", "Request", "Other", "Update"
 ]
 USERS = ["Aldo", "Moni"]
-DATAFILE = "logger_data.json"
+
+# 👇 Updated path to your shared OneDrive folder:
+DATAFILE = r"C:/Users/AldoLizares/OneDrive - avantpage.com/Logger/logger_data.json"
 
 CATEGORY_COLORS = {
     "Question": "#2979FF",
@@ -30,7 +32,7 @@ USER_COLORS = {
 def format_datetime_la(dt):
     la_tz = timezone('America/Los_Angeles')
     dt_la = dt.astimezone(la_tz)
-    return dt_la.strftime("%d %b %Y - %I:%M %p (%Z)")
+    return dt_la.strftime("%d %b %Y - %I:%M %p (Los Angeles)")
 
 def save_entries(entries):
     with open(DATAFILE, "w", encoding="utf-8") as f:
@@ -50,13 +52,11 @@ def pending_count_by_category(entries, viewing_user):
             continue
         if entry["user"] == other_user:
             replies = entry.get("replies", [])
-            if replies:
-                if replies[-1]["user"] != viewing_user:
-                    cat = entry.get("category", "Other")
-                    counts[cat] = counts.get(cat, 0) + 1
-            else:
+            if not replies or replies[-1]["user"] != viewing_user:
                 cat = entry.get("category", "Other")
-                counts[cat] = counts.get(cat, 0) + 1
+                if cat not in counts:
+                    counts[cat] = 0
+                counts[cat] += 1
     return counts
 
 def colored_name(user):
@@ -146,13 +146,19 @@ def main():
     if editor_key not in st.session_state:
         st.session_state[editor_key] = ""
 
+    if st.session_state.get("show_success"):
+        st.success("Comment added.")
+        st.session_state["show_success"] = False
+
+    if st.session_state.get("reply_success"):
+        st.success(st.session_state.reply_success)
+        st.session_state.reply_success = ""
+    if st.session_state.get("reply_error"):
+        st.warning(st.session_state.reply_error)
+        st.session_state.reply_error = ""
+
     st.header("Add a new comment")
     category = st.selectbox("Category", sorted(CATEGORIES), key=f"category_main_{user}")
-
-    if st.session_state.get("clear_editor"):
-        st.session_state[editor_key] = ""
-        st.session_state["clear_editor"] = False
-
     comment = st_quill(html=True, key=editor_key)
 
     add_comment_btn = st.button("Add comment")
@@ -170,8 +176,8 @@ def main():
             }
             st.session_state.entries.append(new_entry)
             save_entries(st.session_state.entries)
-            st.session_state["clear_editor"] = True
-            st.success("Comment added.")
+            st.session_state["show_success"] = True
+            st.session_state[editor_key] = ""  # Clear editor content immediately
 
     st.header("Comments thread")
     search_text = st.text_input("🔍 Search in all comments and replies", value="", placeholder="Type to search...")
@@ -235,11 +241,6 @@ def main():
                     reply_key = f"reply_{idx}_{user}"
                     if reply_key not in st.session_state:
                         st.session_state[reply_key] = ""
-
-                    if st.session_state.get("clear_reply_editor") == reply_key:
-                        st.session_state[reply_key] = ""
-                        st.session_state["clear_reply_editor"] = None
-
                     expanded = (st.session_state.expanded_reply_idx == idx)
                     with st.expander(f"Reply as {user}", expanded=expanded):
                         comment_reply = st_quill(key=reply_key, html=True)
@@ -256,7 +257,7 @@ def main():
                                 }
                                 st.session_state.entries[entries.index(entry)]["replies"].append(reply)
                                 save_entries(st.session_state.entries)
-                                st.session_state["clear_reply_editor"] = reply_key
+                                st.session_state[reply_key] = ""
                                 st.success("Reply added.")
                                 st.session_state.expanded_reply_idx = idx
             st.markdown("---")
