@@ -6,11 +6,9 @@ import os
 from pytz import timezone
 import pytz
 import re
-import time
-import warnings
 
 CATEGORIES = [
-    "Question", "Pending", "Update", "Request", "Feedback", "Other"
+    "Feedback", "Pending", "Question", "Request", "Other", "Update"
 ]
 USERS = ["Aldo", "Moni"]
 DATAFILE = "logger_data.json"
@@ -28,19 +26,6 @@ USER_COLORS = {
     "Aldo": "#23c053",
     "Moni": "#e754c5"
 }
-
-def safe_rerun():
-    try:
-        if hasattr(st, "set_query_params"):
-            st.set_query_params(_rerun=int(time.time()))
-        elif hasattr(st, "experimental_set_query_params"):
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                st.experimental_set_query_params(_rerun=int(time.time()))
-        elif hasattr(st, "experimental_rerun"):
-            st.experimental_rerun()
-    except Exception:
-        pass
 
 def format_datetime_la(dt):
     la_tz = timezone('America/Los_Angeles')
@@ -143,7 +128,6 @@ def main():
     else:
         calendar_selected = None
 
-    other_user = USERS[1] if user == USERS[0] else USERS[0]
     user_color = USER_COLORS.get(user, "#888")
 
     st.markdown(
@@ -157,30 +141,12 @@ def main():
 
     editor_key = f"quill_editor_main_{user}"
 
-    if editor_key not in st.session_state or st.session_state.get("reset_editor"):
+    if editor_key not in st.session_state:
         st.session_state[editor_key] = ""
-        st.session_state["reset_editor"] = False
 
     if st.session_state.get("show_success"):
         st.success("Comment added.")
-
-        st.markdown(
-            """
-            <style>
-            .cont-btn { margin: 12px auto 0 auto; display: flex; justify-content: center; }
-            .stButton>button { font-size:1.1em; padding:8px 36px; border-radius: 18px; }
-            </style>
-            """, unsafe_allow_html=True
-        )
-
-        with st.container():
-            col1, col2, col3 = st.columns([3,3,3])
-            with col2:
-                if st.button("Continue", key="contbtn"):
-                    st.session_state[editor_key] = ""
-                    st.session_state["show_success"] = False
-                    safe_rerun()
-        st.stop()
+        st.session_state["show_success"] = False
 
     if st.session_state.get("reply_success"):
         st.success(st.session_state.reply_success)
@@ -209,7 +175,7 @@ def main():
             st.session_state.entries.append(new_entry)
             save_entries(st.session_state.entries)
             st.session_state["show_success"] = True
-            safe_rerun()
+            st.session_state[editor_key] = ""  # Clear editor content immediately
 
     st.header("Comments thread")
     search_text = st.text_input("🔍 Search in all comments and replies", value="", placeholder="Type to search...")
@@ -268,7 +234,7 @@ def main():
                     st.session_state.entries[entries.index(entry)]["closed"] = True
                     save_entries(st.session_state.entries)
                     st.success("Thread closed!")
-                    safe_rerun()
+
                 if entry["user"] != user:
                     reply_key = f"reply_{idx}_{user}"
                     if reply_key not in st.session_state:
@@ -291,10 +257,6 @@ def main():
                                 save_entries(st.session_state.entries)
                                 st.session_state[reply_key] = ""
                                 st.success("Reply added.")
-                                st.session_state.expanded_reply_idx = idx
-                                safe_rerun()
-                        if st.session_state.expanded_reply_idx != idx:
-                            if st.session_state.get(reply_key):
                                 st.session_state.expanded_reply_idx = idx
             st.markdown("---")
 
