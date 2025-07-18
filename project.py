@@ -2,28 +2,13 @@ import streamlit as st
 from streamlit_quill import st_quill
 from datetime import datetime
 import json
-import os
+import re
 from pytz import timezone
 import pytz
-import re
-
-# Google Sheets imports
 import gspread
 from google.oauth2.service_account import Credentials
 
-# Google Sheets setup
-GSPREAD_SHEET_ID = "1MbElYeHw8bCK9kOyFjv1AtsSEu2H9Qmk8aC3seFhIVE"
-
-# Load credentials from Streamlit secrets or local file
-if "gcp_service_account" in st.secrets:
-    creds_info = st.secrets["gcp_service_account"]
-    creds = Credentials.from_service_account_info(creds_info)
-else:
-    creds = Credentials.from_service_account_file("credentials.json")
-
-gc = gspread.authorize(creds)
-sheet = gc.open_by_key(GSPREAD_SHEET_ID).sheet1
-
+# Constants and colors
 CATEGORIES = [
     "Feedback", "Pending", "Question", "Request", "Other", "Update"
 ]
@@ -43,42 +28,69 @@ USER_COLORS = {
     "Moni": "#e754c5"
 }
 
+# Your Google Sheet ID (already known)
+GSHEET_ID = "1MbElYeHw8bCK9kOyFjv1AtsSEu2H9Qmk8aC3seFhIVE"
+
 def format_datetime_la(dt):
     la_tz = timezone('America/Los_Angeles')
     dt_la = dt.astimezone(la_tz)
-    # Determine if PDT or PST based on date
-    is_dst = bool(dt_la.dst())
-    tz_abbr = "PDT" if is_dst else "PST"
-    return dt_la.strftime(f"%d %b %Y - %I:%M %p ({tz_abbr})")
+    tz_name = dt_la.tzname()
+    return dt_la.strftime(f"%d %b %Y - %I:%M %p ({tz_name})")
+
+def get_gsheet_client():
+    creds_dict = json.loads(st.secrets["gcp_service_account"])
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    client = gspread.authorize(creds)
+    return client
+
+def load_entries():
+    client = get_gsheet_client()
+    sheet = client.open_by_key(GSHEET_ID).sheet1
+    rows = sheet.get_all_records()
+    entries = []
+    for row in rows:
+        entry = {
+            "user": row.get("user", ""),
+            "category": row.get("category", ""),
+            "comment": row.get("comment", ""),
+            "datetime": row.get("datetime", ""),
+            "closed": row.get("closed", False),
+            "replies": []
+        }
+        replies_json = row.get("replies_json", "")
+        if replies_json:
+            try:
+                entry["replies"] = json.loads(replies_json)
+            except:
+                entry["replies"] = []
+        entries.append(entry)
+    return entries
 
 def save_entries(entries):
-    # Clear all rows except header
-    sheet.resize(1)
-    # Prepare data for sheet
-    rows = []
+    client = get_gsheet_client()
+    sheet = client.open_by_key(GSHEET_ID).sheet1
+    sheet.resize(rows=1)
+    rows = [["user", "category", "comment", "datetime", "closed", "replies_json"]]
     for e in entries:
-        row = [
+        rows.append([
             e.get("user", ""),
             e.get("category", ""),
             e.get("comment", ""),
             e.get("datetime", ""),
-            str(e.get("closed", False)),
+            e.get("closed", False),
             json.dumps(e.get("replies", []))
-        ]
-        rows.append(row)
-    if rows:
-        sheet.append_rows(rows)
+        ])
+    sheet.update(rows)
 
-def load_entries():
-    all_records = sheet.get_all_records()
-    for r in all_records:
-        # Parse replies json string back to list
-        try:
-            r["replies"] = json.loads(r.get("replies_json", "[]"))
-        except Exception:
-            r["replies"] = []
-        r["closed"] = r.get("closed", "False") in [True, "True", "true"]
-    return all_records
+# (Keep the rest of your code unchanged, including UI and logic)
+
+# Insert your full app code here, using load_entries() and save_entries()
+
+# For example:
 
 def pending_count_by_category(entries, viewing_user):
     other_user = USERS[1] if viewing_user == USERS[0] else USERS[0]
@@ -90,9 +102,7 @@ def pending_count_by_category(entries, viewing_user):
             replies = entry.get("replies", [])
             if not replies or replies[-1]["user"] != viewing_user:
                 cat = entry.get("category", "Other")
-                if cat not in counts:
-                    counts[cat] = 0
-                counts[cat] += 1
+                counts[cat] = counts.get(cat, 0) + 1
     return counts
 
 def colored_name(user):
