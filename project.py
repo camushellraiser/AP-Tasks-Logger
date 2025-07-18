@@ -2,17 +2,16 @@ import streamlit as st
 from streamlit_quill import st_quill
 from datetime import datetime
 import json
-import base64
-import pytz
+import os
 from pytz import timezone
+import pytz
 import re
-from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
 
 CATEGORIES = [
     "Feedback", "Pending", "Question", "Request", "Other", "Update"
 ]
 USERS = ["Aldo", "Moni"]
+DATAFILE = "logger_data.json"
 
 CATEGORY_COLORS = {
     "Question": "#2979FF",
@@ -28,79 +27,20 @@ USER_COLORS = {
     "Moni": "#e754c5"
 }
 
-GSHEET_ID = "1MbElYeHw8bCK9kOyFjv1AtsSEu2H9Qmk8aC3seFhIVE"  # Tu ID de Google Sheet
-
 def format_datetime_la(dt):
     la_tz = timezone('America/Los_Angeles')
     dt_la = dt.astimezone(la_tz)
     return dt_la.strftime("%d %b %Y - %I:%M %p (%Z)")
 
-def get_gsheet_client():
-    b64_str = st.secrets["GOOGLE_CREDS_BASE64"]
-    b64_str += "=" * (-len(b64_str) % 4)  # Padding para evitar errores
-    decoded_bytes = base64.b64decode(b64_str)
-    creds_dict = json.loads(decoded_bytes)
-    creds = Credentials.from_service_account_info(
-        creds_dict,
-        scopes=["https://www.googleapis.com/auth/spreadsheets"]
-    )
-    client = build("sheets", "v4", credentials=creds)
-    return client
+def save_entries(entries):
+    with open(DATAFILE, "w", encoding="utf-8") as f:
+        json.dump(entries, f, indent=2, ensure_ascii=False)
 
 def load_entries():
-    try:
-        client = get_gsheet_client()
-        sheet = client.spreadsheets()
-        result = sheet.values().get(
-            spreadsheetId=GSHEET_ID,
-            range="Sheet1!A2:F"
-        ).execute()
-        values = result.get("values", [])
-        entries = []
-        for row in values:
-            while len(row) < 6:
-                row.append("")
-            entry = {
-                "user": row[0],
-                "category": row[1],
-                "comment": row[2],
-                "datetime": row[3],
-                "closed": row[4].lower() == "true",
-                "replies": json.loads(row[5]) if row[5] else []
-            }
-            entries.append(entry)
-        return entries
-    except Exception as e:
-        st.error(f"Error loading entries from Google Sheets: {e}")
-        return []
-
-def save_entries(entries):
-    try:
-        client = get_gsheet_client()
-        sheet = client.spreadsheets()
-        sheet.values().clear(spreadsheetId=GSHEET_ID, range="Sheet1!A2:F").execute()
-
-        values = []
-        for e in entries:
-            row = [
-                e.get("user", ""),
-                e.get("category", ""),
-                e.get("comment", ""),
-                e.get("datetime", ""),
-                str(e.get("closed", False)),
-                json.dumps(e.get("replies", []))
-            ]
-            values.append(row)
-
-        body = {"values": values}
-        sheet.values().update(
-            spreadsheetId=GSHEET_ID,
-            range="Sheet1!A2",
-            valueInputOption="RAW",
-            body=body
-        ).execute()
-    except Exception as e:
-        st.error(f"Error saving entries to Google Sheets: {e}")
+    if os.path.exists(DATAFILE):
+        with open(DATAFILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
 
 def pending_count_by_category(entries, viewing_user):
     other_user = USERS[1] if viewing_user == USERS[0] else USERS[0]
@@ -109,12 +49,10 @@ def pending_count_by_category(entries, viewing_user):
         if entry.get("closed", False):
             continue
         if entry["user"] == other_user:
-            replies = entry.get("replies", [])
-            if not replies or replies[-1]["user"] != viewing_user:
-                cat = entry.get("category", "Other")
-                if cat not in counts:
-                    counts[cat] = 0
-                counts[cat] += 1
+            cat = entry.get("category", "Other")
+            if cat not in counts:
+                counts[cat] = 0
+            counts[cat] += 1
     return counts
 
 def colored_name(user):
@@ -204,21 +142,11 @@ def main():
     if editor_key not in st.session_state:
         st.session_state[editor_key] = ""
 
-    if st.session_state.get("show_success"):
-        st.success("Comment added.")
-        st.session_state["show_success"] = False
-
-    if st.session_state.get("reply_success"):
-        st.success(st.session_state.reply_success)
-        st.session_state.reply_success = ""
-    if st.session_state.get("reply_error"):
-        st.warning(st.session_state.reply_error)
-        st.session_state.reply_error = ""
+    # Eliminamos banners de éxito para evitar problemas visuales
 
     st.header("Add a new comment")
     category = st.selectbox("Category", sorted(CATEGORIES), key=f"category_main_{user}")
 
-    # Limpieza segura del editor antes de renderizar
     if st.session_state.get("clear_editor"):
         st.session_state[editor_key] = ""
         st.session_state["clear_editor"] = False
@@ -240,8 +168,7 @@ def main():
             }
             st.session_state.entries.append(new_entry)
             save_entries(st.session_state.entries)
-            st.session_state["show_success"] = True
-            st.session_state["clear_editor"] = True  # Indica limpiar editor
+            st.session_state["clear_editor"] = True  # Limpiar editor al enviar
 
     st.header("Comments thread")
     search_text = st.text_input("🔍 Search in all comments and replies", value="", placeholder="Type to search...")
@@ -306,7 +233,6 @@ def main():
                     if reply_key not in st.session_state:
                         st.session_state[reply_key] = ""
 
-                    # Limpieza segura del editor de replies
                     if st.session_state.get("clear_reply_editor") == reply_key:
                         st.session_state[reply_key] = ""
                         st.session_state["clear_reply_editor"] = None
@@ -327,9 +253,7 @@ def main():
                                 }
                                 st.session_state.entries[entries.index(entry)]["replies"].append(reply)
                                 save_entries(st.session_state.entries)
-                                st.session_state["reply_success"] = "Reply added."
-                                st.session_state["clear_reply_editor"] = reply_key  # Marca para limpiar
-                                st.success("Reply added.")
+                                st.session_state["clear_reply_editor"] = reply_key
                                 st.session_state.expanded_reply_idx = idx
             st.markdown("---")
 
