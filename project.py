@@ -38,7 +38,10 @@ def format_datetime_la(dt):
     return dt_la.strftime(f"%d %b %Y - %I:%M %p ({tz_abbr})")
 
 def get_gsheet_client():
-    decoded_bytes = base64.b64decode(st.secrets["GOOGLE_CREDS_BASE64"])
+    # Obtener base64 del secreto y arreglar padding si falta
+    b64_str = st.secrets["GOOGLE_CREDS_BASE64"]
+    b64_str += "=" * (-len(b64_str) % 4)
+    decoded_bytes = base64.b64decode(b64_str)
     creds_dict = json.loads(decoded_bytes)
     creds = Credentials.from_service_account_info(creds_dict, scopes=["https://www.googleapis.com/auth/spreadsheets"])
     client = build("sheets", "v4", credentials=creds)
