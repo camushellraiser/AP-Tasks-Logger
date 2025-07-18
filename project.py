@@ -4,6 +4,7 @@ from datetime import datetime
 import json
 import base64
 import pytz
+from pytz import timezone
 import re
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -27,23 +28,22 @@ USER_COLORS = {
     "Moni": "#e754c5"
 }
 
-GSHEET_ID = "1MbElYeHw8bCK9kOyFjv1AtsSEu2H9Qmk8aC3seFhIVE"
+GSHEET_ID = "1MbElYeHw8bCK9kOyFjv1AtsSEu2H9Qmk8aC3seFhIVE"  # tu ID de Google Sheet
 
 def format_datetime_la(dt):
-    la_tz = pytz.timezone('America/Los_Angeles')
+    la_tz = timezone('America/Los_Angeles')
     dt_la = dt.astimezone(la_tz)
-    offset = dt_la.utcoffset()
-    is_dst = bool(offset and offset.total_seconds() != 0)
-    tz_abbr = "PDT" if is_dst else "PST"
-    return dt_la.strftime(f"%d %b %Y - %I:%M %p ({tz_abbr})")
+    return dt_la.strftime("%d %b %Y - %I:%M %p (%Z)")
 
 def get_gsheet_client():
-    # Obtener base64 del secreto y arreglar padding si falta
     b64_str = st.secrets["GOOGLE_CREDS_BASE64"]
-    b64_str += "=" * (-len(b64_str) % 4)
+    b64_str += "=" * (-len(b64_str) % 4)  # Padding para evitar errores
     decoded_bytes = base64.b64decode(b64_str)
     creds_dict = json.loads(decoded_bytes)
-    creds = Credentials.from_service_account_info(creds_dict, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+    creds = Credentials.from_service_account_info(
+        creds_dict,
+        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+    )
     client = build("sheets", "v4", credentials=creds)
     return client
 
@@ -51,17 +51,23 @@ def load_entries():
     try:
         client = get_gsheet_client()
         sheet = client.spreadsheets()
-        result = sheet.values().get(spreadsheetId=GSHEET_ID, range="Sheet1!A2:F").execute()
+        result = sheet.values().get(
+            spreadsheetId=GSHEET_ID,
+            range="Sheet1!A2:F"
+        ).execute()
         values = result.get("values", [])
         entries = []
         for row in values:
+            # Completar filas que puedan faltar campos con valores por defecto
+            while len(row) < 6:
+                row.append("")
             entry = {
                 "user": row[0],
                 "category": row[1],
                 "comment": row[2],
                 "datetime": row[3],
-                "closed": row[4].lower() == "true" if len(row) > 4 else False,
-                "replies": json.loads(row[5]) if len(row) > 5 and row[5] else []
+                "closed": row[4].lower() == "true",
+                "replies": json.loads(row[5]) if row[5] else []
             }
             entries.append(entry)
         return entries
@@ -73,19 +79,28 @@ def save_entries(entries):
     try:
         client = get_gsheet_client()
         sheet = client.spreadsheets()
-        values = []
-        for entry in entries:
-            values.append([
-                entry["user"],
-                entry["category"],
-                entry["comment"],
-                entry["datetime"],
-                str(entry.get("closed", False)),
-                json.dumps(entry.get("replies", []))
-            ])
-        body = {"values": values}
+        # Limpiar rango antes de escribir
         sheet.values().clear(spreadsheetId=GSHEET_ID, range="Sheet1!A2:F").execute()
-        sheet.values().update(spreadsheetId=GSHEET_ID, range="Sheet1!A2:F", valueInputOption="RAW", body=body).execute()
+
+        values = []
+        for e in entries:
+            row = [
+                e.get("user", ""),
+                e.get("category", ""),
+                e.get("comment", ""),
+                e.get("datetime", ""),
+                str(e.get("closed", False)),
+                json.dumps(e.get("replies", []))
+            ]
+            values.append(row)
+
+        body = {"values": values}
+        sheet.values().update(
+            spreadsheetId=GSHEET_ID,
+            range="Sheet1!A2",
+            valueInputOption="RAW",
+            body=body
+        ).execute()
     except Exception as e:
         st.error(f"Error saving entries to Google Sheets: {e}")
 
@@ -204,6 +219,12 @@ def main():
 
     st.header("Add a new comment")
     category = st.selectbox("Category", sorted(CATEGORIES), key=f"category_main_{user}")
+
+    # Limpieza segura del editor antes de renderizar
+    if st.session_state.get("clear_editor"):
+        st.session_state[editor_key] = ""
+        st.session_state["clear_editor"] = False
+
     comment = st_quill(html=True, key=editor_key)
 
     add_comment_btn = st.button("Add comment")
@@ -222,7 +243,7 @@ def main():
             st.session_state.entries.append(new_entry)
             save_entries(st.session_state.entries)
             st.session_state["show_success"] = True
-            st.session_state[editor_key] = ""  # Clear editor content immediately
+            st.session_state["clear_editor"] = True  # Indica limpiar editor
 
     st.header("Comments thread")
     search_text = st.text_input("🔍 Search in all comments and replies", value="", placeholder="Type to search...")
