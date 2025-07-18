@@ -3,18 +3,10 @@ from streamlit_quill import st_quill
 from datetime import datetime
 import json
 import base64
-from pytz import timezone
 import pytz
 import re
-
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
-
-# ID de tu Google Sheet
-GSHEET_ID = "1MbElYeHw8bCK9kOyFjv1AtsSEu2H9Qmk8aC3seFhIVE"
-
-# Scope necesario para Google Sheets API
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 CATEGORIES = [
     "Feedback", "Pending", "Question", "Request", "Other", "Update"
@@ -35,65 +27,64 @@ USER_COLORS = {
     "Moni": "#e754c5"
 }
 
+GSHEET_ID = "1MbElYeHw8bCK9kOyFjv1AtsSEu2H9Qmk8aC3seFhIVE"
+
+def format_datetime_la(dt):
+    la_tz = pytz.timezone('America/Los_Angeles')
+    dt_la = dt.astimezone(la_tz)
+    offset = dt_la.utcoffset()
+    is_dst = bool(offset and offset.total_seconds() != 0)
+    tz_abbr = "PDT" if is_dst else "PST"
+    return dt_la.strftime(f"%d %b %Y - %I:%M %p ({tz_abbr})")
+
 def get_gsheet_client():
     decoded_bytes = base64.b64decode(st.secrets["GOOGLE_CREDS_BASE64"])
-    decoded_str = decoded_bytes.decode("utf-8")
-    creds_dict = json.loads(decoded_str)
-    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-    client = build('sheets', 'v4', credentials=creds)
+    creds_dict = json.loads(decoded_bytes)
+    creds = Credentials.from_service_account_info(creds_dict, scopes=["https://www.googleapis.com/auth/spreadsheets"])
+    client = build("sheets", "v4", credentials=creds)
     return client
 
-def save_entries(entries):
-    client = get_gsheet_client()
-    sheet = client.spreadsheets()
-    
-    values = []
-    for entry in entries:
-        replies_json = json.dumps(entry.get("replies", []), ensure_ascii=False)
-        values.append([
-            entry.get("user", ""),
-            entry.get("category", ""),
-            entry.get("comment", ""),
-            entry.get("datetime", ""),
-            str(entry.get("closed", False)),
-            replies_json
-        ])
-    
-    # Limpiamos rango de datos antes de actualizar para evitar residuos
-    sheet.values().clear(spreadsheetId=GSHEET_ID, range="A2:F1000").execute()
-    
-    # Actualizamos con los nuevos valores
-    sheet.values().update(
-        spreadsheetId=GSHEET_ID,
-        range="A2:F1000",
-        valueInputOption="RAW",
-        body={"values": values}
-    ).execute()
-
 def load_entries():
-    client = get_gsheet_client()
-    sheet = client.spreadsheets()
-    result = sheet.values().get(spreadsheetId=GSHEET_ID, range="A2:F1000").execute()
-    values = result.get("values", [])
-    entries = []
-    for row in values:
-        try:
-            entries.append({
+    try:
+        client = get_gsheet_client()
+        sheet = client.spreadsheets()
+        result = sheet.values().get(spreadsheetId=GSHEET_ID, range="Entries!A2:F").execute()
+        values = result.get("values", [])
+        entries = []
+        for row in values:
+            entry = {
                 "user": row[0],
                 "category": row[1],
                 "comment": row[2],
                 "datetime": row[3],
-                "closed": row[4].lower() == "true",
-                "replies": json.loads(row[5]) if len(row) > 5 else []
-            })
-        except Exception:
-            pass
-    return entries
+                "closed": row[4].lower() == "true" if len(row) > 4 else False,
+                "replies": json.loads(row[5]) if len(row) > 5 and row[5] else []
+            }
+            entries.append(entry)
+        return entries
+    except Exception as e:
+        st.error(f"Error loading entries from Google Sheets: {e}")
+        return []
 
-def format_datetime_la(dt):
-    la_tz = timezone('America/Los_Angeles')
-    dt_la = dt.astimezone(la_tz)
-    return dt_la.strftime("%d %b %Y - %I:%M %p (%Z)")  # Muestra PDT o PST automáticamente
+def save_entries(entries):
+    try:
+        client = get_gsheet_client()
+        sheet = client.spreadsheets()
+        values = []
+        for entry in entries:
+            values.append([
+                entry["user"],
+                entry["category"],
+                entry["comment"],
+                entry["datetime"],
+                str(entry.get("closed", False)),
+                json.dumps(entry.get("replies", []))
+            ])
+        body = {"values": values}
+        sheet.values().clear(spreadsheetId=GSHEET_ID, range="Entries!A2:F").execute()
+        sheet.values().update(spreadsheetId=GSHEET_ID, range="Entries!A2:F", valueInputOption="RAW", body=body).execute()
+    except Exception as e:
+        st.error(f"Error saving entries to Google Sheets: {e}")
 
 def pending_count_by_category(entries, viewing_user):
     other_user = USERS[1] if viewing_user == USERS[0] else USERS[0]
