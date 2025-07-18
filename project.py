@@ -84,8 +84,8 @@ def save_entries(entries):
                 json.dumps(entry.get("replies", []))
             ])
         body = {"values": values}
-        sheet.values().clear(spreadsheetId=GSHEET_ID, range="Entries!A2:F").execute()
-        sheet.values().update(spreadsheetId=GSHEET_ID, range="Entries!A2:F", valueInputOption="RAW", body=body).execute()
+        sheet.values().clear(spreadsheetId=GSHEET_ID, range="Sheet1!A2:F").execute()
+        sheet.values().update(spreadsheetId=GSHEET_ID, range="Sheet1!A2:F", valueInputOption="RAW", body=body).execute()
     except Exception as e:
         st.error(f"Error saving entries to Google Sheets: {e}")
 
